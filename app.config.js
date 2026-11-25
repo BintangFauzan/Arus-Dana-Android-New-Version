@@ -27,6 +27,7 @@ module.exports = ({ config }) => ({
     'expo-updates',
     'expo-sharing',
     'expo-web-browser',
+    '@react-native-google-signin/google-signin',
     ['@react-native-firebase/app', googleServicesFile ? { androidGoogleServicesFile: googleServicesFile } : {}],
   ],
   runtimeVersion: { policy: 'appVersion' },

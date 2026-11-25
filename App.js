@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Alert, Modal, ScrollView, StatusBar, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import * as WebBrowser from 'expo-web-browser';
-import { useIdTokenAuthRequest } from 'expo-auth-session/providers/google';
+import Constants from 'expo-constants';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as SecureStore from 'expo-secure-store';
@@ -9,8 +8,6 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Updates from 'expo-updates';
 import { onAuthStateChanged, GoogleAuthProvider, signInWithCredential, signOut } from 'firebase/auth';
 import { doc, getDoc, collection, addDoc, serverTimestamp } from 'firebase/firestore';
-import { makeRedirectUri } from 'expo-auth-session';
-import * as Crypto from 'expo-crypto';
 import { auth, db, configured } from './src/services/firebase';
 import { getDatabase, listEnvelopes, listTransactions, listTransfers, saveEnvelope, removeEnvelope, saveTransaction, saveTransfer, removeTransaction } from './src/db/database';
 import { envelopeBalance, sumAmounts } from './src/db/math';
@@ -22,7 +19,6 @@ import { shouldPromptFeedback } from './src/services/feedback';
 import { logEvent } from './src/services/analytics';
 import { theme } from './src/theme';
 
-WebBrowser.maybeCompleteAuthSession();
 const screenNames = ['Splash', 'Onboarding 1/3', 'Onboarding 2/3', 'Onboarding 3/3', 'Login', 'Setup Amplop', 'Setup AI Key', 'Home', 'Amplop', 'Transaksi Manual', 'AI Capture', 'Riwayat', 'Review Bulanan', 'Akses AI', 'Settings & Profil'];
 const money = (value) => `Rp ${Math.round(value || 0).toLocaleString('id-ID')}`;
 const makeId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -54,12 +50,6 @@ export default function App() {
   const [chatQuestion, setChatQuestion] = useState('');
   const [chatAnswer, setChatAnswer] = useState('');
   const uid = user?.uid || 'dev-local';
-  const [request, response, promptAsync] = useIdTokenAuthRequest({
-    clientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || '',
-    scopes: ['openid', 'profile', 'email'],
-    usePKCE: true,
-    extraParams: { nonce: 'pending' },
-  }, { scheme: 'arusdana', native: makeRedirectUri({ scheme: 'arusdana' }), useProxy: false });
 
   async function refresh() {
     try {
@@ -120,36 +110,26 @@ export default function App() {
       }
     }).catch((error) => { if (__DEV__) console.warn('Pemeriksaan update tidak berhasil', error); });
   }, []);
-  useEffect(() => {
-    if (response?.type !== 'success' || !response.params?.id_token || !auth) return;
-    let cancelled = false;
-    async function completeLogin() {
-      try {
-        const state = await SecureStore.getItemAsync('arusdana_oauth_state');
-        const expectedNonce = await SecureStore.getItemAsync('arusdana_oauth_nonce');
-        await SecureStore.deleteItemAsync('arusdana_oauth_state');
-        await SecureStore.deleteItemAsync('arusdana_oauth_nonce');
-        if (!state || response.params.state !== state || !expectedNonce) throw new Error('State autentikasi Google tidak valid. Coba login kembali.');
-        const payload = JSON.parse(atob(response.params.id_token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-        if (payload.nonce !== expectedNonce || payload.exp * 1000 <= Date.now() || payload.aud !== process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID) throw new Error('Token Google tidak valid untuk aplikasi ini.');
-        const credential = GoogleAuthProvider.credential(response.params.id_token);
-        await signInWithCredential(auth, credential);
-      } catch (error) {
-        if (!cancelled) Alert.alert('Login gagal', error.code === 'auth/network-request-failed' ? 'Login pertama membutuhkan koneksi internet. Coba kembali saat online.' : error.message);
-      }
-    }
-    completeLogin();
-    return () => { cancelled = true; };
-  }, [response]);
-
   async function login() {
+    if (Constants.executionEnvironment === 'storeClient') {
+      return Alert.alert('Login diuji melalui APK', 'Google Sign-In native tidak tersedia di Expo Go. Gunakan APK Android yang Founder build melalui EAS untuk menguji login; fitur lain tetap dapat diuji di Expo Go.');
+    }
     if (!configured) return Alert.alert('Konfigurasi dibutuhkan', 'Isi variabel EXPO_PUBLIC_FIREBASE_* dari Firebase project Founder.');
-    if (!request) return Alert.alert('Login belum siap', 'Konfigurasi Google Web Client ID belum tersedia.');
-    const state = `${Date.now()}-${makeId()}`;
-    const nonce = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, `${state}-${makeId()}`);
-    await SecureStore.setItemAsync('arusdana_oauth_state', state);
-    await SecureStore.setItemAsync('arusdana_oauth_nonce', nonce);
-    await promptAsync({ extraParams: { state, nonce } });
+    const webClientId = Constants.expoConfig?.extra?.googleWebClientId || process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
+    if (!webClientId) return Alert.alert('Konfigurasi OAuth dibutuhkan', 'Isi EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID dengan Web OAuth Client ID dari Firebase project yang sama.');
+    if (!auth) return Alert.alert('Firebase belum siap', 'Periksa konfigurasi Firebase client.');
+    try {
+      const { GoogleSignin } = require('@react-native-google-signin/google-signin');
+      GoogleSignin.configure({ webClientId, offlineAccess: false });
+      const result = await GoogleSignin.signIn();
+      if (result.type !== 'success' || !result.data.idToken) return Alert.alert('Login belum berhasil', 'Google tidak mengembalikan ID token. Periksa google-services.json dan OAuth client Android/Web.');
+      const credential = GoogleAuthProvider.credential(result.data.idToken);
+      await signInWithCredential(auth, credential);
+    } catch (error) {
+      const { statusCodes } = require('@react-native-google-signin/google-signin');
+      if (error.code === statusCodes.SIGN_IN_CANCELLED) return;
+      Alert.alert('Login gagal', error.code === 'auth/network-request-failed' ? 'Login pertama membutuhkan koneksi internet. Coba kembali saat online.' : `${error.message}\n\nPastikan google-services.json milik project arus-dana-mvp tersedia, Google Sign-In aktif, serta package dan SHA-1 EAS terdaftar.`);
+    }
   }
   async function transferBetweenEnvelopes() {
     const amount = Number(transferAmount);

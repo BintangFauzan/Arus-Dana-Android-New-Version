@@ -1,0 +1,11 @@
+node_modules/
+.expo/
+dist/
+web-build/
+.env
+.env.*
+!.env.example
+google-services.json
+*.jks
+*.keystore
+npm-debug.log*
